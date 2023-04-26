@@ -1,0 +1,351 @@
+#!/usr/bin/env python
+"""
+Utility data manager for GDAC ftp sample
+
+Use this script to download a subset of the GDAC ftp to be shared on the argopy-data repo
+
+"""
+import os
+import sys
+import argparse
+import aiohttp
+import asyncio
+import aiofiles
+import xarray as xr
+import shutil
+from urllib.parse import urlparse, parse_qs, unquote
+import logging
+import hashlib
+import numpy as np
+from tqdm.asyncio import tqdm_asyncio
+from pathlib import Path
+import gzip
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "argopy"))
+import argopy
+from argopy import DataFetcher
+from argopy.options import OPTIONS
+from argopy.stores import httpstore
+from argopy.stores import indexstore_pa as indexstore
+
+log = logging.getLogger("argopy-data")
+
+#
+argopy.set_options(ftp="https://data-argo.ifremer.fr")
+
+# Where to save GDAC FTP data to:
+DATA_FOLDER = os.path.dirname(os.path.realpath(__file__)).replace("cli", "ftp")
+
+# List of float WMO to load data for in this subset of the ftp:
+WMO_LIST = [
+            13857,
+            5906072,
+            1900857,
+            5900865,
+            4902252,
+            6901929,
+            3902131,
+            2902696,
+            2902269,
+            2901746,
+            2901780,
+            4901079,
+            2901623,
+            5900446,
+        ]
+
+
+# Dictionary mapping of file extension with http data content type
+CONTENT_TYPE = {
+    "js": "application/json",
+    "json": "application/json",
+    "yaml": "text/yaml",
+    "ld+json": "application/ld+json",
+    "rdf+xml": "application/rdf+xml",
+    "xml": "application/rdf+xml",
+    "text/turtle": "text/turtle",
+    "turtle": "text/turtle",
+    "nc": "application/x-netcdf",
+    "ncHeader": "text/plain",
+    "txt": "text/plain",
+    "html": "text/html",
+    "png": "image/png",
+    "gz": "application/x-gzip",
+}
+
+
+def list_files(load=True):
+    listOfFiles = list()
+    for dirpath, dirnames, filenames in os.walk(DATA_FOLDER):
+        listOfFiles += [os.path.join(dirpath, file) for file in filenames]
+    for file in listOfFiles:
+        print(log_file_desc(file))
+
+
+def log_file_desc(file):
+    size = float(os.stat(file).st_size / (1024 * 1024))
+    prt_size = lambda x: "Size < 1Mb" if x < 1 else "Size = %0.2dMb" % x
+    msg = []
+    msg.append("%s, %s" % (file.replace(DATA_FOLDER, ""), prt_size(size)))
+    return " 🔸 ".join(msg)
+
+
+def can_be_xr_opened(src, file):
+    try:
+        xr.open_dataset(file)
+        return src
+    except:
+        # print("This source can't be opened with xarray: %s" % src)
+        return src
+
+
+def list_gdac_links(session: aiohttp.ClientSession):
+    this_URI = []
+
+    requests = {
+        "float": WMO_LIST,
+    }
+
+    def nc_file(url):
+        return {
+            "uri": url,
+            "ext": "nc",
+            "type": CONTENT_TYPE["nc"],
+        }
+
+    def add_to_URI(this, this_fetcher):
+        uri = this_fetcher.uri
+        if len(uri) > 1:
+            raise ValueError("not as expected !")
+        url = uri[0]  # the multi-profile file
+
+        # Add all float folder files:
+        p = urlparse(url)
+        float_root = url.replace(p.path, p.path.replace(os.path.basename(p.path), ""))
+        ls = httpstore().fs.ls(float_root)
+        [this.append(nc_file(l['name'])) for l in ls if '.nc' in l['name']]
+
+        # Add all mono-profile files:
+        floatprof_root = url.replace(p.path, p.path.replace(os.path.basename(p.path), "profiles"))
+        ls = httpstore().fs.ls(floatprof_root)
+        [this.append(nc_file(l['name'])) for l in ls if '.nc' in l['name']]
+
+        return this
+
+    fetcher = DataFetcher(src="gdac", ds="phy", cache=True)
+    for access_point in requests:
+        if access_point == "float":
+            for cfg in requests[access_point]:
+                this_URI = add_to_URI(this_URI, fetcher.float(cfg))
+
+    # Add more URI from the IFREMER GDAC:
+    index_files = [
+        "ar_index_global_prof",
+        "ar_index_global_meta",
+        "ar_index_global_tech",
+        "ar_index_global_traj",
+        "argo_bio-profile_index",
+        "argo_bio-traj_index",
+        "argo_synthetic-profile_index",
+    ]
+    for index in index_files:
+        for ext in ["txt", "txt.gz"]:
+            this_URI.append(
+                {
+                    "uri": "%s/%s.%s" % (OPTIONS["ftp"], index, ext),
+                    "ext": ext if "gz" not in ext else "gz",
+                    "sha": hashlib.sha256(
+                        ("%s/%s.%s" % (OPTIONS["ftp"], index, ext)).encode()
+                    ).hexdigest(),
+                    "type": CONTENT_TYPE[ext if "gz" not in ext else "gz"],
+                }
+            )
+
+    index_files = ["ar_index_this_week_meta", "ar_index_this_week_prof"]
+    for index in index_files:
+        for ext in ["txt"]:
+            this_URI.append(
+                {
+                    "uri": "%s/%s.%s" % (OPTIONS["ftp"], index, ext),
+                    "ext": ext if "gz" not in ext else "gz",
+                    "sha": hashlib.sha256(
+                        ("%s/%s.%s" % (OPTIONS["ftp"], index, ext)).encode()
+                    ).hexdigest(),
+                    "type": CONTENT_TYPE[ext if "gz" not in ext else "gz"],
+                }
+            )
+
+    this_URI.append(
+        {
+            "uri": "%s/ar_greylist.txt" % OPTIONS["ftp"],
+            "ext": "txt",
+            "sha": hashlib.sha256(("%s/ar_greylist" % OPTIONS["ftp"]).encode()).hexdigest(),
+            "type": CONTENT_TYPE['txt'],
+        }
+    )
+
+    return this_URI
+
+
+def data_cleanup():
+    shutil.rmtree(DATA_FOLDER)
+    Path(DATA_FOLDER).mkdir(parents=True, exist_ok=True)
+
+
+def squeeze_an_index(index_file, wmo_list, new_file):
+    keep = []
+    with open(index_file, 'r') as file:
+        for line in file:
+            if line[0] == '#':
+                keep.append(line)
+            elif line[0:4] == 'file':
+                keep.append(line)
+            else:
+                for wmo in wmo_list:
+                    if ("/%i/" % wmo) in line:
+                        keep.append(line)
+    with open(new_file, 'w') as f:
+        for line in keep:
+            f.write(line)
+
+
+async def fetch_download_links(session: aiohttp.ClientSession):
+    """Gather the list of all remote ressources to download
+
+    The return list is a list of dictionaries with all the necessary keys to save and retrieve requests offline using
+    the fixture of the local HTTP server
+    """
+    URI = []
+
+    # REQUESTS to: https://data-argo.ifremer.fr
+    [URI.append(link) for link in list_gdac_links(session)]
+
+    # Return the list of dictionaries
+    return URI
+
+
+async def place_file(session: aiohttp.ClientSession, source: dict) -> None:
+    """Download remote file and save it locally"""
+    test_data_file = DATA_FOLDER + source["uri"].replace(OPTIONS["ftp"], "")
+
+    if OVERWRITE or not os.path.exists(test_data_file):
+        async with session.get(source["uri"], ssl=False, timeout=60*3) as r:
+            if r.content_type not in CONTENT_TYPE.values():
+                print(
+                    "Unexpected content type (%s) with this GET request: %s (%s extension)"
+                    % (
+                        r.content_type,
+                        source["uri"],
+                        os.path.splitext(urlparse(source["uri"]).path)[1],
+                    )
+                )
+
+            Path(os.path.dirname(test_data_file)).mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(test_data_file, "wb") as f:
+                data = await r.content.read(n=-1)  # load all read bytes !
+                await f.write(data)
+                print(log_file_desc(f.name))
+                return can_be_xr_opened(source, test_data_file)
+    else:
+        # print("%s already exists !" % test_data_file)
+        return can_be_xr_opened(source, test_data_file)
+
+
+async def download():
+    connector = aiohttp.TCPConnector(limit=1, force_close=True)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        urls = await fetch_download_links(session)
+        return await asyncio.gather(*[place_file(session, url) for url in urls])
+        # await tqdm_asyncio.gather(*[place_file(session, url) for url in urls])
+
+
+def setup_args():
+    icons_help_string = """This script aims to ease tutorial data management."""
+
+    parser = argparse.ArgumentParser(
+        description="argopy tutorial data manager",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="%s\n(c) Argo-France/Ifremer/LOPS, 2023" % icons_help_string,
+    )
+
+    def choicesDescriptions():
+        return """
+       destination  - return absolute path to tutorial data storage folder 
+       download     - download all tutorial data
+       list         - list available tutorial data
+       clean        - delete all tutorial data and associated files
+    """
+
+    def getChoices():
+        return ["list", "destination", "download", "clean"]
+
+    parser.add_argument(
+        "-a",
+        "--action",
+        choices=getChoices(),
+        help="action to perform among: %s" % choicesDescriptions(),
+        metavar="",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        help="Force write on data files even if they already exist",
+        action="store_true",
+    )
+
+    return parser
+
+
+if __name__ == "__main__":
+    ARGS = setup_args().parse_args()
+    OVERWRITE = ARGS.force
+
+    if ARGS.action == "destination":
+        print("FTP data are stored in:\n%s" % DATA_FOLDER)
+
+    if ARGS.action == "list":
+        list_files(load=False)
+
+    if ARGS.action == "download":
+        # Async download of all remote ressources:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        URLS = loop.run_until_complete(download())
+
+        # URLS = [url for url in URLS if url is not None]
+        print("\nSaved %i urls" % len(URLS))
+
+        # Now that we downloaded all data, we must update the index files to make them coherent with the actual dac folder content
+        # (because we didn't download all the ftp content)
+        idx = indexstore(host=DATA_FOLDER).load()
+        idx.search_wmo(WMO_LIST)
+        idx.to_indexfile(idx.index_path)
+        # Gunzip the new txt file:
+        with open(idx.index_path, 'rb') as f_in:
+            with gzip.open(idx.index_path + '.gz', 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+        # For the other index file, we rely on a more pragmatic approach,
+        # we load the index and keep only lines corresponding to floats in the list
+        index_files = [
+            "ar_index_global_prof",
+            "ar_index_global_meta",
+            "ar_index_global_tech",
+            "ar_index_global_traj",
+            "argo_bio-profile_index",
+            "argo_bio-traj_index",
+            "argo_synthetic-profile_index",
+            "ar_index_this_week_meta",
+            "ar_index_this_week_prof"
+        ]
+        for index in index_files:
+            afile = DATA_FOLDER + '/' + index + '.txt'
+            squeeze_an_index(afile, WMO_LIST, afile)
+            # Gunzip the new txt file:
+            if 'week' not in afile:
+                with open(afile, 'rb') as f_in:
+                    with gzip.open(afile + '.gz', 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+
+    if ARGS.action == "clean":
+        data_cleanup()
