@@ -44,7 +44,6 @@ WMO_LIST = [
             5900865,
             4902252,
             6901929,
-            3902131,
             2902696,
             2902269,
             2901746,
@@ -52,6 +51,8 @@ WMO_LIST = [
             4901079,
             2901623,
             5900446,
+            3902131,  # BGC
+            6903247,  # BGC
         ]
 
 
@@ -229,7 +230,7 @@ async def place_file(session: aiohttp.ClientSession, source: dict) -> None:
     test_data_file = DATA_FOLDER + source["uri"].replace(OPTIONS["ftp"], "")
 
     if OVERWRITE or not os.path.exists(test_data_file):
-        async with session.get(source["uri"], ssl=False, timeout=60*3) as r:
+        async with session.get(source["uri"], ssl=False, timeout=60*5) as r:
             if r.content_type not in CONTENT_TYPE.values():
                 print(
                     "Unexpected content type (%s) with this GET request: %s (%s extension)"
@@ -244,7 +245,7 @@ async def place_file(session: aiohttp.ClientSession, source: dict) -> None:
             async with aiofiles.open(test_data_file, "wb") as f:
                 data = await r.content.read(n=-1)  # load all read bytes !
                 await f.write(data)
-                print(log_file_desc(f.name))
+                # print(log_file_desc(f.name))
                 return can_be_xr_opened(source, test_data_file)
     else:
         # print("%s already exists !" % test_data_file)
@@ -255,9 +256,9 @@ async def download():
     connector = aiohttp.TCPConnector(limit=1, force_close=True)
     async with aiohttp.ClientSession(connector=connector) as session:
         urls = await fetch_download_links(session)
-        return await asyncio.gather(*[place_file(session, url) for url in urls])
-        # await tqdm_asyncio.gather(*[place_file(session, url) for url in urls])
-
+        # return await asyncio.gather(*[place_file(session, url) for url in urls])
+        await tqdm_asyncio.gather(*[place_file(session, url) for url in urls])
+        return urls
 
 def setup_args():
     icons_help_string = """This script aims to ease tutorial data management."""
@@ -293,7 +294,7 @@ def setup_args():
         action="store_true",
     )
 
-    return parser   
+    return parser
 
 
 if __name__ == "__main__":
@@ -308,22 +309,22 @@ if __name__ == "__main__":
 
     if ARGS.action == "download":
         # Async download of all remote ressources:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        URLS = loop.run_until_complete(download())
-
-        # URLS = [url for url in URLS if url is not None]
-        print("\nSaved %i urls" % len(URLS))
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        # URLS = loop.run_until_complete(download())
+        # 
+        # # URLS = [url for url in URLS if url is not None]
+        # print("\nSaved %i urls" % len(URLS))
 
         # Now that we downloaded all data, we must update the index files to make them coherent with the actual dac folder content
         # (because we didn't download all the ftp content)
-        idx = indexstore(host=DATA_FOLDER).load()
-        idx.search_wmo(WMO_LIST)
-        idx.to_indexfile(idx.index_path)
-        # Gunzip the new txt file:
-        with open(idx.index_path, 'rb') as f_in:
-            with gzip.open(idx.index_path + '.gz', 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
+        # idx = indexstore(host=DATA_FOLDER).load()
+        # idx.search_wmo(WMO_LIST)
+        # idx.to_indexfile(idx.index_path)
+        # # Gunzip the new txt file:
+        # with open(idx.index_path, 'rb') as f_in:
+        #     with gzip.open(idx.index_path + '.gz', 'wb') as f_out:
+        #         shutil.copyfileobj(f_in, f_out)
 
         # For the other index file, we rely on a more pragmatic approach,
         # we load the index and keep only lines corresponding to floats in the list
