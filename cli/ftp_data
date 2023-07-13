@@ -194,6 +194,7 @@ def data_cleanup():
 
 
 def squeeze_an_index(index_file, wmo_list, new_file):
+    """Squeeze a profile index file down to rows from a list of WMO, and save to another index file."""
     keep = []
     with open(index_file, 'r') as file:
         for line in file:
@@ -312,7 +313,7 @@ if __name__ == "__main__":
         # loop = asyncio.new_event_loop()
         # asyncio.set_event_loop(loop)
         # URLS = loop.run_until_complete(download())
-        # 
+        #
         # # URLS = [url for url in URLS if url is not None]
         # print("\nSaved %i urls" % len(URLS))
 
