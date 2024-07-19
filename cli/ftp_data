@@ -267,7 +267,7 @@ def setup_args():
     parser = argparse.ArgumentParser(
         description="argopy tutorial data manager",
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog="%s\n(c) Argo-France/Ifremer/LOPS, 2023" % icons_help_string,
+        epilog="%s\n(c) Argo-France/Ifremer/LOPS, 2023-2024" % icons_help_string,
     )
 
     def choicesDescriptions():
@@ -310,22 +310,21 @@ if __name__ == "__main__":
 
     if ARGS.action == "download":
         # Async download of all remote ressources:
-        # loop = asyncio.new_event_loop()
-        # asyncio.set_event_loop(loop)
-        # URLS = loop.run_until_complete(download())
-        #
-        # # URLS = [url for url in URLS if url is not None]
-        # print("\nSaved %i urls" % len(URLS))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        URLS = loop.run_until_complete(download())
+        # URLS = [url for url in URLS if url is not None]
+        print("\nSaved %i urls" % len(URLS))
 
-        # Now that we downloaded all data, we must update the index files to make them coherent with the actual dac folder content
-        # (because we didn't download all the ftp content)
-        # idx = indexstore(host=DATA_FOLDER).load()
-        # idx.search_wmo(WMO_LIST)
-        # idx.to_indexfile(idx.index_path)
-        # # Gunzip the new txt file:
-        # with open(idx.index_path, 'rb') as f_in:
-        #     with gzip.open(idx.index_path + '.gz', 'wb') as f_out:
-        #         shutil.copyfileobj(f_in, f_out)
+        # Now that we downloaded all data, we must update the index files to make them coherent with the actual dac
+        # folder content (because we didn't download all the ftp content)
+        idx = indexstore(host=DATA_FOLDER).load()
+        idx.search_wmo(WMO_LIST)
+        idx.to_indexfile(idx.index_path)
+        # Gunzip the new txt file:
+        with open(idx.index_path, 'rb') as f_in:
+            with gzip.open(idx.index_path + '.gz', 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
 
         # For the other index file, we rely on a more pragmatic approach,
         # we load the index and keep only lines corresponding to floats in the list
