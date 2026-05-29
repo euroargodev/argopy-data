@@ -1,6 +1,6 @@
 <img src="https://raw.githubusercontent.com/euroargodev/argopy/master/docs/_static/argopy_logo_long.png" alt="argopy logo" width="200"/> 
 
-# Argo Data repository for argopy
+# Argo Sample Data repository for Argopy
 
 This repository hold example data for the [argopy](https://github.com/euroargodev/argopy) library (e.g., as used in the documentation and unit testing) that would bloat the main repository if included there.
 
